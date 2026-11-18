@@ -292,6 +292,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   .workspace-main{padding:12px 10px calc(88px + env(safe-area-inset-bottom))}
   .grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid-3,.grid-2{grid-template-columns:1fr}
+  .material-kpis{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+  .material-kpis .panel{padding:10px}
+  .material-kpis .muted{font-size:.67rem}
   .panel{padding:12px}
   .panel .muted{font-size:.76rem}
   .panel .kpi{font-size:1.3rem}
