@@ -11,6 +11,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg'],
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,webmanifest}']
+      },
       manifest: {
         name: 'Sensations Bois',
         short_name: 'Sensations Bois',
@@ -19,8 +22,8 @@ export default defineConfig({
         start_url: base,
         scope: base,
         display: 'standalone',
-        background_color: '#f5f3ef',
-        theme_color: '#2d2925',
+        background_color: '#100c09',
+        theme_color: '#100c09',
         icons: [
           {
             src: `${base}pwa-192.png`,
