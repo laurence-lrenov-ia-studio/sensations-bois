@@ -197,9 +197,14 @@ th{background:rgba(255,255,255,.06);color:#e6c4a5;font-size:.74rem;text-transfor
 }
 @media(max-width:560px){
   .home{padding:16px}
+  .top{grid-template-columns:1fr;gap:12px}
+  .logo{width:min(280px,80vw)}
   .cards{grid-template-columns:1fr}
   .home-card,.home-card-content{min-height:220px}
-  .info{gap:12px;flex-wrap:wrap;justify-content:flex-start}
+  .info{gap:12px;flex-wrap:nowrap;justify-content:space-between;min-width:0;padding-top:0}
+  .info .big{font-size:1.2rem}
+  .datetime{min-width:0;text-align:right}
+  .datetime .small{max-width:150px}
   .sep{display:none}
   .workspace-header{padding:11px 10px}
   .back{padding:8px 10px;font-size:.78rem}
