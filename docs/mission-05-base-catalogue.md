@@ -41,3 +41,7 @@ La fonction de stock est `SECURITY DEFINER` car les rôles clients n'ont aucun d
 ## Vérification locale effectuée
 
 La migration a été exécutée dans un conteneur temporaire `public.ecr.aws/supabase/postgres:17.11.0.006`, sans base distante. `validation/mission-05-local.sql` a validé les refus `anon`/non-membre, l'isolation entre deux administrateurs, les créations et modifications autorisées, le contrôle de cohérence intervention/chantier, l'absence de débit sur le post-it, l'inventaire préalable obligatoire, les règles de débit, les retours partiels, le retour excessif refusé et l'idempotence. Après annulation des données fictives : 0 produit, 0 mouvement, 0 membre ; RLS active sur les huit tables, 0 droit de table pour `anon`, 0 droit d'écriture direct `authenticated` sur produits et mouvements.
+
+## Évolution validée après la mission 05
+
+La règle d'inventaire préalable obligatoire ci-dessus décrit la migration initiale telle qu'installée. La nouvelle règle du 23 novembre 2026 autorise une **sortie tracée avant inventaire**, sans débit chiffré. La migration complémentaire `20261123000001_preinventory_outflows.sql` ajoute une table et une fonction séparées ; elle ne modifie ni la migration initiale, ni les stocks déjà présents. Elle a été exécutée par l'utilisateur sur Sensations Bois, avec contrôle des empreintes avant/après. Voir `docs/sorties-avant-inventaire.md`.

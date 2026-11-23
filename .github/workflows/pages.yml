@@ -37,6 +37,7 @@ jobs:
           VITE_SUPABASE_URL: https://dkfwiaulbapfbbrslavy.supabase.co
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SENSATIONS_BOIS_SUPABASE_PUBLISHABLE_KEY }}
           VITE_SCANNER_WRITES_ENABLED: 'false'
+          VITE_PREINVENTORY_OUTFLOWS_ENABLED: 'true'
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

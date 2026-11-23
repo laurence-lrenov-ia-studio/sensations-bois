@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { preinventoryOutflowsEnabled } from '../../features/stock/preinventory'
 
 export type Product = {
   id: string
@@ -66,6 +67,17 @@ export type StockMovement = {
   created_at: string
 }
 
+export type PreinventoryOutflow = {
+  id: string
+  product_id: string
+  chantier_id: string
+  type_sortie: 'prise_cartouche' | 'boite_vide' | 'sortie_manuelle'
+  quantite: number
+  motif: string
+  utilisateur_id: string
+  created_at: string
+}
+
 export type WorkspaceData = {
   products: Product[]
   chantiers: Chantier[]
@@ -73,6 +85,7 @@ export type WorkspaceData = {
   postit: PostitItem[]
   material: Material[]
   movements: StockMovement[]
+  preinventoryOutflows: PreinventoryOutflow[]
 }
 
 function check<T>(result: { data: T | null; error: { message: string } | null }): T {
@@ -83,7 +96,7 @@ function check<T>(result: { data: T | null; error: { message: string } | null })
 
 export async function loadWorkspace(client: SupabaseClient): Promise<WorkspaceData> {
   const [categoriesResult, productsResult, chantiersResult, interventionsResult,
-    postitResult, materialResult, movementsResult] = await Promise.all([
+    postitResult, materialResult, movementsResult, preinventoryResult] = await Promise.all([
     client.from('sb_categories').select('id,name').order('name'),
     client.from('sb_products').select('id,id_interne,designation,category_id,quantite_stock,inventoried_at,seuil_critique,debit_rule,unite,statut_validation,code_barres').order('id_interne'),
     client.from('sb_chantiers').select('id,reference,intitule,client_nom,adresse,statut,date_debut,date_fin').order('created_at', { ascending: false }),
@@ -91,6 +104,9 @@ export async function loadWorkspace(client: SupabaseClient): Promise<WorkspaceDa
     client.from('sb_postit_items').select('id,chantier_id,intervention_id,product_id,materiel_id,quantite_prevue,est_prepare,actif').eq('actif', true),
     client.from('sb_materiel').select('id,designation,statut').order('designation'),
     client.from('sb_stock_movements').select('id,product_id,chantier_id,sortie_movement_id,type_mouvement,variation,quantite_avant,quantite_apres,motif,created_at').order('created_at', { ascending: false }).limit(500),
+    preinventoryOutflowsEnabled
+      ? client.from('sb_preinventory_outflows').select('id,product_id,chantier_id,type_sortie,quantite,motif,utilisateur_id,created_at').order('created_at', { ascending: false }).limit(500)
+      : Promise.resolve({ data: [] as PreinventoryOutflow[], error: null }),
   ])
   const categories = check<{ id: string; name: string }[]>(categoriesResult)
   const products = check<Omit<Product, 'category'>[]>(productsResult)
@@ -102,5 +118,6 @@ export async function loadWorkspace(client: SupabaseClient): Promise<WorkspaceDa
     postit: check<PostitItem[]>(postitResult),
     material: check<Material[]>(materialResult),
     movements: check<StockMovement[]>(movementsResult),
+    preinventoryOutflows: check<PreinventoryOutflow[]>(preinventoryResult),
   }
 }
