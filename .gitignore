@@ -5,5 +5,10 @@ dist/
 !.env.example
 *.local
 *.tsbuildinfo
+*.csv
+*.CSV
+*.env
+*.env.*
+!.env.example
 .DS_Store
 prototype_application_sensations_bois_cliquable_v2.html

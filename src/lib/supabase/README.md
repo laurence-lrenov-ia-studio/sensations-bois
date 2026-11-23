@@ -1,4 +1,3 @@
-# Supabase (préparation)
+# Supabase Sensations Bois
 
-Les noms des variables publiques attendues sont documentés dans `.env.example`.
-Ce dossier accueillera plus tard le client et les types de données. Aucune connexion n'est initialisée à ce stade.
+`client.ts` refuse toute URL différente de `dkfwiaulbapfbbrslavy` et n'initialise le client qu'avec une clé publiable. `data.ts` lit les tables après connexion Auth. Les politiques RLS et `sb_private.members` restent la source d'autorisation. Voir `docs/mission-06-connexion.md`.

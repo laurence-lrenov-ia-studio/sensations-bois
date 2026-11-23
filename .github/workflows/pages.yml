@@ -27,7 +27,16 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Check Sensations Bois configuration
+        env:
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SENSATIONS_BOIS_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          [[ "$VITE_SUPABASE_PUBLISHABLE_KEY" == sb_publishable_* ]] || { echo 'Missing or invalid Sensations Bois publishable key repository variable'; exit 1; }
       - run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://dkfwiaulbapfbbrslavy.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SENSATIONS_BOIS_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SCANNER_WRITES_ENABLED: 'false'
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

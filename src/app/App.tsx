@@ -1,46 +1,23 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import type { User } from '@supabase/supabase-js'
 import logo from '../assets/prototype/logo.png'
 import stockPhoto from '../assets/prototype/stock.jpg'
 import chantiersPhoto from '../assets/prototype/chantiers.jpg'
 import materielPhoto from '../assets/prototype/materiel.jpg'
 import agendaPhoto from '../assets/prototype/agenda.jpg'
 import scannerPhoto from '../assets/prototype/scanner.jpg'
+import { configurationError, invitationInUrl, supabase } from '../lib/supabase/client'
+import { loadWorkspace, type WorkspaceData } from '../lib/supabase/data'
+import { stockStatus } from '../features/stock/stock-status'
+const Scanner = lazy(() => import('../features/scanner/Scanner').then(module => ({ default: module.Scanner })))
 
 type Page = 'home' | 'stock' | 'chantiers' | 'materiel' | 'agenda' | 'scanner'
-type Product = { name: string; family: string; stock: number; reserved: number; threshold: number }
-type Project = { client: string; city: string; type: string; progress: number; detail: string }
-type Material = { name: string; status: string; kind: 'ok' | 'warn' | 'alert'; done: boolean }
-type Demo = { products: Product[]; projects: Project[]; material: Material[]; events: { title: string }[][] }
-const key = 'sensationsBoisDemoMission04'
-const days = ['Lun 20', 'Mar 21', 'Mer 22', 'Jeu 23', 'Ven 24', 'Sam 25', 'Dim 26']
-const defaults: Demo = {
-  products: [
-    { name: 'Colle PU', family: 'Colles', stock: 8, reserved: 2, threshold: 3 },
-    { name: 'Mastic blanc', family: 'Mastics', stock: 2, reserved: 1, threshold: 3 },
-    { name: 'Bande abrasive grain 80', family: 'Abrasifs', stock: 4, reserved: 2, threshold: 2 },
-    { name: 'Parquet chêne', family: 'Bois', stock: 42, reserved: 18, threshold: 10 },
-  ],
-  projects: [
-    { client: 'Client Démo A', city: 'Bordeaux', type: 'Pose parquet', progress: 57, detail: '47 m² posés sur 82 m²' },
-    { client: 'Client Démo B', city: 'Mérignac', type: 'Dressing sur mesure', progress: 25, detail: 'Prise de côtes terminée' },
-    { client: 'Client Démo C', city: 'Le Bouscat', type: 'Cuisine sur mesure', progress: 80, detail: 'Pose presque terminée' },
-    { client: 'Client Démo D', city: 'Pessac', type: 'Bibliothèque', progress: 40, detail: 'Fabrication atelier' },
-    { client: 'Client Démo E', city: 'Eysines', type: 'Terrasse bois', progress: 15, detail: 'Approvisionnement en cours' },
-  ],
-  material: [
-    { name: 'Parquet chêne — 12 m²', status: 'Disponible', kind: 'ok', done: false },
-    { name: 'Colle parquet — 4 seaux', status: '1 manque', kind: 'alert', done: false },
-    { name: 'Bandes grain 80 — 2 boîtes', status: 'Disponible', kind: 'ok', done: false },
-    { name: 'Scie plongeante', status: 'À charger', kind: 'warn', done: false },
-    { name: 'Aspirateur chantier', status: 'Sur un autre chantier', kind: 'alert', done: false },
-  ],
-  events: [[{ title: 'Démo A — Pose parquet' }], [{ title: 'Démo A — Pose parquet' }], [{ title: 'Démo B — Prise de côtes' }], [{ title: 'Démo C — Finitions' }], [{ title: 'Atelier — Fabrication' }], [], []],
-}
-function initial(): Demo {
-  try { const data = JSON.parse(localStorage.getItem(key) || 'null'); if (data && Array.isArray(data.products) && Array.isArray(data.projects) && Array.isArray(data.material) && Array.isArray(data.events) && data.events.length === 7) return data }
-  catch { /* Ignore an invalid local demo. */ }
-  return structuredClone(defaults)
-}
+type Modal = 'inventory' | 'chantier' | 'intervention' | 'postit' | null
+const empty: WorkspaceData = { products: [], chantiers: [], interventions: [], postit: [], material: [], movements: [] }
+const photos = { stock: stockPhoto, chantiers: chantiersPhoto, materiel: materielPhoto, agenda: agendaPhoto, scanner: scannerPhoto }
+const dateTime = (value: string) => new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
+const errorText = (error: unknown) => error instanceof Error ? error.message : 'Opération impossible.'
+
 function Icon({ page }: { page: Page }) {
   const shapes: Record<Page, ReactNode> = {
     home: null,
@@ -52,102 +29,179 @@ function Icon({ page }: { page: Page }) {
   }
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.55" aria-hidden="true">{shapes[page]}</svg>
 }
+
 function Header({ title, subtitle, home }: { title: string; subtitle: string; home: () => void }) {
-  return <header className="workspace-header"><button className="back" onClick={home}>← Accueil</button><div className="workspace-title"><h1>{title}</h1><p>{subtitle} · Données fictives</p></div><img className="mini-logo" src={logo} alt=""/></header>
+  return <header className="workspace-header"><button className="back" onClick={home}>← Accueil</button><div className="workspace-title"><h1>{title}</h1><p>{subtitle}</p></div><img className="mini-logo" src={logo} alt=""/></header>
 }
 function Kpi({ label, value }: { label: string; value: number | string }) {
   return <div className="panel"><div className="muted">{label}</div><div className="kpi">{value}</div></div>
 }
+
 export function App() {
+  const [user, setUser] = useState<User | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [inviteFlow, setInviteFlow] = useState(invitationInUrl)
+  const [data, setData] = useState<WorkspaceData>(empty)
+  const [authorized, setAuthorized] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [page, setPage] = useState<Page>('home')
-  const [demo, setDemo] = useState<Demo>(initial)
-  const [modal, setModal] = useState<'product' | 'project' | 'event' | null>(null)
-  const [message, setMessage] = useState('')
+  const [modal, setModal] = useState<Modal>(null)
+  const [selectedProduct, setSelectedProduct] = useState('')
+  const [stockType, setStockType] = useState('entree')
+  const [stockQuantity, setStockQuantity] = useState(1)
+  const [stockChantier, setStockChantier] = useState('')
+  const [stockSource, setStockSource] = useState('')
+  const [stockReason, setStockReason] = useState('')
+  const [search, setSearch] = useState('')
   const [now, setNow] = useState(new Date())
-  const [weather, setWeather] = useState({ temp: '-- °C', label: 'Météo Bordeaux' })
-  const [scannedIndex, setScannedIndex] = useState<number | null>(null)
-  const [scanType, setScanType] = useState('Entrée fournisseur')
-  const [scanQty, setScanQty] = useState(2)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => { localStorage.setItem(key, JSON.stringify(demo)) }, [demo])
-  useEffect(() => { const interval = setInterval(() => setNow(new Date()), 30_000); return () => clearInterval(interval) }, [])
+
   useEffect(() => {
-    const controller = new AbortController()
-    fetch('https://api.open-meteo.com/v1/forecast?latitude=44.84&longitude=-0.58&current=temperature_2m,weather_code&timezone=auto', { signal: controller.signal }).then(r => r.json()).then(data => {
-      const labels: Record<number, string> = { 0: 'Ciel dégagé', 1: 'Peu nuageux', 2: 'Partiellement nuageux', 3: 'Couvert', 61: 'Pluie', 63: 'Pluie', 65: 'Forte pluie', 80: 'Averses', 81: 'Averses', 82: 'Fortes averses' }
-      setWeather({ temp: `${Math.round(data.current.temperature_2m)} °C`, label: `${labels[data.current.weather_code] || 'Conditions variables'} · Bordeaux` })
-    }).catch(() => setWeather({ temp: '-- °C', label: 'Météo indisponible' }))
-    return () => controller.abort()
+    if (!supabase) { setAuthReady(true); return }
+    let active = true
+    supabase.auth.getUser().then(({ data: result, error: authError }) => {
+      if (!active) return
+      setUser(authError ? null : result.user)
+      setAuthReady(true)
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return
+      setUser(session?.user ?? null)
+      if (!session) { setData(empty); setAuthorized(false); setPage('home') }
+    })
+    return () => { active = false; listener.subscription.unsubscribe() }
   }, [])
-  useEffect(() => { if (!modal) return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setModal(null) }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close) }, [modal])
-  function show(next: Page) { setPage(next); window.scrollTo(0, 0) }
-  function toast(text: string) { setMessage(text); if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setMessage(''), 2600) }
-  function reset() { setDemo(structuredClone(defaults)); localStorage.removeItem(key); setScannedIndex(null); toast('Démo réinitialisée') }
-  function adjustStock(index: number) {
-    const input = prompt('Nouvelle quantité en stock (démo)', String(demo.products[index].stock))
-    if (input === null) return
-    const stock = Number(input)
-    if (!Number.isInteger(stock) || stock < 0) return toast('Saisis une quantité entière positive')
-    setDemo(old => ({ ...old, products: old.products.map((p, i) => i === index ? { ...p, stock } : p) })); toast('Stock fictif mis à jour')
+
+  useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 30_000); return () => clearInterval(timer) }, [])
+  useEffect(() => {
+    if (!user || !supabase || inviteFlow) return
+    let active = true
+    setLoading(true)
+    setError('')
+    loadWorkspace(supabase).then(result => {
+      if (!active) return
+      // The catalog is the membership gate. RLS returns no rows to users absent from sb_private.members.
+      if (result.products.length === 0) { setAuthorized(false); setData(empty); setError('Accès non autorisé ou catalogue vide. Vérifiez le compte et son habilitation.'); return }
+      setData(result); setAuthorized(true)
+    }).catch(cause => { if (active) { setAuthorized(false); setData(empty); setError(errorText(cause)) } })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [user?.id, inviteFlow])
+
+  async function refresh() {
+    if (!supabase) return
+    const result = await loadWorkspace(supabase)
+    if (result.products.length === 0) throw new Error('Le catalogue Sensations Bois n’est pas accessible.')
+    setData(result)
   }
-  function adjustProject(index: number) {
-    const input = prompt('Nouvel avancement en % (démo)', String(demo.projects[index].progress))
-    if (input === null) return
-    const progress = Number(input)
-    if (!Number.isFinite(progress) || progress < 0 || progress > 100) return toast('Saisis un pourcentage de 0 à 100')
-    setDemo(old => ({ ...old, projects: old.projects.map((p, i) => i === index ? { ...p, progress, detail: `${progress} % terminé` } : p) })); toast('Avancement fictif mis à jour')
+
+  async function login(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    setBusy(true); setError('')
+    const form = new FormData(event.currentTarget)
+    const { error: authError } = await supabase.auth.signInWithPassword({ email: String(form.get('email') ?? '').trim(), password: String(form.get('password') ?? '') })
+    if (authError) setError('Connexion refusée. Vérifiez vos identifiants et votre habilitation.')
+    setBusy(false)
   }
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = new FormData(event.currentTarget)
-    if (modal === 'product') {
-      const name = String(form.get('name') || '').trim(), stock = Number(form.get('stock')), threshold = Number(form.get('threshold'))
-      if (!name) return toast('Renseigne une désignation')
-      if (![stock, threshold].every(n => Number.isInteger(n) && n >= 0)) return toast('Saisis des quantités entières positives')
-      setDemo(old => ({ ...old, products: [...old.products, { name, family: String(form.get('family') || '').trim() || 'Autres', stock, reserved: 0, threshold }] }))
-    } else if (modal === 'project') {
-      const client = String(form.get('client') || '').trim(), progress = Number(form.get('progress'))
-      if (!client) return toast('Renseigne un client fictif')
-      if (!Number.isFinite(progress) || progress < 0 || progress > 100) return toast('Saisis un pourcentage de 0 à 100')
-      setDemo(old => ({ ...old, projects: [...old.projects, { client, city: String(form.get('city') || '').trim() || '—', type: String(form.get('type') || '').trim() || 'Chantier', progress, detail: `${progress} % terminé` }] }))
-    } else if (modal === 'event') {
-      const title = String(form.get('title') || '').trim(), day = Number(form.get('day'))
-      if (!title) return toast('Renseigne un intitulé')
-      setDemo(old => ({ ...old, events: old.events.map((events, i) => i === day ? [...events, { title }] : events) }))
+
+  async function finishInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || !user) return
+    const form = new FormData(event.currentTarget)
+    const password = String(form.get('password') ?? '')
+    const confirmation = String(form.get('confirmation') ?? '')
+    if (password.length < 12 || password !== confirmation) {
+      setError('Choisissez au moins 12 caractères et saisissez deux fois le même mot de passe.')
+      return
     }
-    setModal(null); toast('Donnée fictive enregistrée')
+    setBusy(true); setError('')
+    const { error: authError } = await supabase.auth.updateUser({ password })
+    setBusy(false)
+    if (authError) { setError('Le mot de passe n’a pas été enregistré. Vérifiez le lien d’invitation ou réessayez.'); return }
+    window.history.replaceState({}, '', window.location.pathname)
+    setInviteFlow(false)
+    setNotice('Mot de passe enregistré. Vérification de votre habilitation…')
   }
-  function validateScan() {
-    if (scannedIndex === null) return toast('Scanne d’abord un produit')
-    if (!Number.isInteger(scanQty) || scanQty < 1) return toast('Saisis une quantité entière positive')
-    setDemo(old => ({ ...old, products: old.products.map((p, i) => i === scannedIndex ? { ...p, stock: scanType === 'Sortie chantier' ? Math.max(0, p.stock - scanQty) : p.stock + scanQty } : p) })); toast('Mouvement fictif enregistré')
+
+  async function mutate(action: () => PromiseLike<{ error: { message: string } | null }>, success: string) {
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const response = await action()
+      if (response.error) throw new Error(response.error.message)
+      await refresh()
+      setModal(null); setNotice(success)
+    } catch (cause) { setError(errorText(cause)) }
+    finally { setBusy(false) }
   }
-  const alerts = demo.products.filter(p => p.stock - p.reserved <= p.threshold).length
-  const done = demo.material.filter(m => m.done).length, remaining = demo.material.length - done
-  const cards: { page: Exclude<Page, 'home'>; title: string; description: string; foot: string; photo: string }[] = [
-    { page: 'stock', title: 'Stock', description: 'Produits, quantités, réservations et alertes.', foot: `${alerts} alerte${alerts > 1 ? 's' : ''}`, photo: stockPhoto },
-    { page: 'chantiers', title: 'Chantiers', description: 'Photos, côtes, documents et avancement.', foot: `${demo.projects.length} actifs`, photo: chantiersPhoto },
-    { page: 'materiel', title: 'Matériel', description: 'Post-it du matin, chargement et retours.', foot: `${remaining} à préparer`, photo: materielPhoto },
-    { page: 'agenda', title: 'Agenda', description: 'Chantiers, rendez-vous et interventions.', foot: 'Semaine démo', photo: agendaPhoto },
-    { page: 'scanner', title: 'Scanner', description: 'Entrées, sorties et QR codes internes.', foot: 'Simulation', photo: scannerPhoto },
+
+  async function inventory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    const form = new FormData(event.currentTarget)
+    const productId = String(form.get('product_id') ?? '')
+    const quantity = Number(form.get('quantity'))
+    if (!Number.isSafeInteger(quantity) || quantity < 0 || form.get('confirm') !== 'yes') { setError('Saisissez une quantité entière et confirmez le comptage.'); return }
+    if (data.products.find(product => product.id === productId)?.quantite_stock !== null) { setError('Ce produit a déjà été inventorié.'); return }
+    await mutate(() => supabase!.rpc('sb_record_stock_movement', { p_operation_id: crypto.randomUUID(), p_product_id: productId, p_type: 'inventaire_initial', p_quantity: quantity, p_motif: 'Inventaire initial compté et confirmé', p_chantier_id: null, p_sortie_movement_id: null }), 'Inventaire initial enregistré et historisé.')
+  }
+
+  async function submitChantier(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!supabase) return
+    const f = new FormData(event.currentTarget)
+    await mutate(() => supabase!.from('sb_chantiers').insert({ reference: String(f.get('reference')).trim(), intitule: String(f.get('intitule')).trim(), client_nom: String(f.get('client_nom')).trim() || null, adresse: String(f.get('adresse')).trim() || null, statut: 'prévu' }).select('id').single(), 'Chantier créé.')
+  }
+  async function submitIntervention(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!supabase) return
+    const f = new FormData(event.currentTarget)
+    await mutate(() => supabase!.from('sb_interventions').insert({ chantier_id: String(f.get('chantier_id')), intitule: String(f.get('intitule')).trim(), debut: new Date(String(f.get('debut'))).toISOString(), statut: 'prévue' }).select('id').single(), 'Intervention créée.')
+  }
+  async function submitPostit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!supabase) return
+    const f = new FormData(event.currentTarget)
+    await mutate(() => supabase!.from('sb_postit_items').insert({ chantier_id: String(f.get('chantier_id')), product_id: String(f.get('product_id')), quantite_prevue: Number(f.get('quantity')), est_prepare: false, actif: true }).select('id').single(), 'Ajouté au post-it sans débit de stock.')
+  }
+
+  const product = data.products.find(item => item.id === selectedProduct)
+  const stockOutType = product?.debit_rule === 'prise_confirmee' ? 'prise_cartouche' : product?.debit_rule === 'boite_vide' ? 'boite_vide' : 'sortie_manuelle'
+  const matchingSources = data.movements.filter(m => m.product_id === selectedProduct && m.chantier_id === stockChantier && ['prise_cartouche','boite_vide','sortie_manuelle'].includes(m.type_mouvement) && -m.variation > data.movements.filter(r => r.sortie_movement_id === m.id).reduce((sum, r) => sum + r.variation, 0))
+
+  async function recordMovement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!supabase || !product) return
+    if (!Number.isSafeInteger(stockQuantity) || stockQuantity < 1) { setError('Saisissez une quantité entière positive.'); return }
+    if (product.quantite_stock === null) { setError('Inventoriez ce produit avant tout mouvement.'); return }
+    const type = stockType === 'sortie' ? stockOutType : stockType
+    if ((type === 'retour' || stockType === 'sortie') && !stockChantier) { setError('Choisissez un chantier.'); return }
+    if (type === 'retour' && !stockSource) { setError('Choisissez la sortie chantier à laquelle rattacher ce retour.'); return }
+    if (!stockReason.trim()) { setError('Indiquez un motif.'); return }
+    await mutate(() => supabase!.rpc('sb_record_stock_movement', { p_operation_id: crypto.randomUUID(), p_product_id: product.id, p_type: type, p_quantity: stockQuantity, p_motif: stockReason.trim(), p_chantier_id: stockChantier || null, p_sortie_movement_id: type === 'retour' ? stockSource : null }), 'Mouvement enregistré et historisé.')
+  }
+
+  const notInventoried = data.products.filter(p => p.quantite_stock === null).length
+  const alerts = data.products.filter(p => p.quantite_stock !== null && p.quantite_stock <= p.seuil_critique).length
+  const filtered = data.products.filter(p => `${p.id_interne} ${p.designation} ${p.category}`.toLocaleLowerCase('fr').includes(search.toLocaleLowerCase('fr')))
+  const cards: { page: Exclude<Page, 'home'>; title: string; description: string; foot: string }[] = [
+    { page: 'stock', title: 'Stock', description: 'Catalogue, inventaire et seuils critiques.', foot: `${notInventoried} non inventorié(s)` },
+    { page: 'chantiers', title: 'Chantiers', description: 'Dossiers et avancement.', foot: `${data.chantiers.length} chantier(s)` },
+    { page: 'materiel', title: 'Matériel', description: 'Post-it du matin et préparation.', foot: `${data.postit.length} élément(s)` },
+    { page: 'agenda', title: 'Agenda', description: 'Interventions et rendez-vous.', foot: `${data.interventions.length} intervention(s)` },
+    { page: 'scanner', title: 'Scanner', description: 'Codes-barres et mouvements confirmés.', foot: `${data.movements.length} mouvement(s)` },
   ]
-  const time = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(now)
-  const date = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(now)
-  const scanned = scannedIndex === null ? null : demo.products[scannedIndex]
+
+  if (inviteFlow && user && !configurationError) return <div className="app auth-screen"><div className="auth-card"><img className="logo" src={logo} alt="Sensations Bois"/><h1>Accepter l’invitation</h1><p>Compte : {user.email}. Choisissez vous-même votre mot de passe pour Sensations Bois.</p><form onSubmit={finishInvitation}><label htmlFor="new-password">Nouveau mot de passe</label><input id="new-password" name="password" type="password" autoComplete="new-password" minLength={12} required/><label htmlFor="confirm-password">Confirmer le mot de passe</label><input id="confirm-password" name="confirmation" type="password" autoComplete="new-password" minLength={12} required/><button className="btn primary" disabled={busy}>Enregistrer mon mot de passe</button></form>{error && <p className="feedback-error" role="alert">{error}</p>}</div></div>
+  if (configurationError || !authReady || !user || loading || !authorized) return <div className="app auth-screen"><div className="auth-card"><img className="logo" src={logo} alt="Sensations Bois"/><h1>Accès professionnel</h1>{configurationError ? <p role="alert">{configurationError}</p> : !authReady || loading ? <p>Chargement sécurisé…</p> : !user ? <form onSubmit={login}><label htmlFor="email">Adresse e-mail</label><input id="email" name="email" type="email" autoComplete="username" required/><label htmlFor="password">Mot de passe</label><input id="password" name="password" type="password" autoComplete="current-password" required/><button className="btn primary" disabled={busy}>Se connecter</button></form> : <button className="btn secondary" onClick={() => supabase?.auth.signOut()}>Changer de compte</button>}{error && <p className="feedback-error" role="alert">{error}</p>}</div></div>
+
   return <div className="app">
-    {page === 'home' && <section className="screen active home"><header className="top"><img className="logo" src={logo} alt="Sensations Bois"/><div className="info"><div className="weather"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18Z"/></svg><div><div className="big">{weather.temp}</div><div className="small">{weather.label}</div></div></div><div className="sep"/><div className="datetime"><div className="big">{time}</div><div className="small">{date}</div></div></div></header><section className="hello"><h1>Bonjour <span>Rémy</span></h1><p className="demo-note">Interface de démonstration · Données fictives</p></section><section className="cards" aria-label="Espaces de démonstration">{cards.map(card => <button key={card.page} className="home-card" style={{ '--photo': `url(${card.photo})` } as CSSProperties} onClick={() => show(card.page)}><div className="home-card-content"><div className="icon"><Icon page={card.page}/></div><h2>{card.title}</h2><p>{card.description}</p><div className="card-foot"><span>{card.foot}</span><span>Ouvrir →</span></div></div></button>)}</section></section>}
-    {page === 'stock' && <section className="screen active workspace"><Header title="Stock" subtitle="Catalogue, quantités et alertes" home={() => show('home')}/><main className="workspace-main"><div className="grid grid-4"><Kpi label="Références" value={demo.products.length}/><Kpi label="Sous le seuil" value={alerts}/><Kpi label="Réservées" value={demo.products.reduce((sum, p) => sum + p.reserved, 0)}/><Kpi label="Commandes en cours" value="2"/></div><div className="actions" style={{ marginTop: 18 }}><button className="btn primary" onClick={() => setModal('product')}>Ajouter un produit</button><button className="btn secondary" onClick={() => toast('Export d’inventaire — simulation')}>Exporter l’inventaire</button><button className="btn ghost" onClick={reset}>Réinitialiser la démo</button></div><div className="panel mobile-table-wrap"><table><thead><tr><th>Produit</th><th>Famille</th><th>Stock</th><th>Réservé</th><th>Disponible</th><th>Seuil</th><th>État</th><th></th></tr></thead><tbody>{demo.products.map((p, i) => { const available = p.stock - p.reserved, status = available <= 0 ? ['Rupture', 'alert'] : available <= p.threshold ? ['À recommander', 'warn'] : ['OK', 'ok']; return <tr key={i}><td data-label="Produit">{p.name}</td><td data-label="Famille">{p.family}</td><td data-label="Stock">{p.stock}</td><td data-label="Réservé">{p.reserved}</td><td data-label="Disponible">{available}</td><td data-label="Seuil">{p.threshold}</td><td data-label="État"><span className={`badge ${status[1]}`}>{status[0]}</span></td><td data-label="Action"><button className="btn ghost" onClick={() => adjustStock(i)}>Modifier</button></td></tr> })}</tbody></table></div></main></section>}
-    {page === 'chantiers' && <section className="screen active workspace"><Header title="Chantiers" subtitle="Dossiers actifs et avancement" home={() => show('home')}/><main className="workspace-main"><div className="actions"><button className="btn primary" onClick={() => setModal('project')}>Nouveau chantier</button><button className="btn secondary" onClick={() => toast('Archives — simulation')}>Voir les archives</button></div><div className="grid grid-3">{demo.projects.map((p, i) => <div className="project-card" key={i}><h3>{p.client} — {p.city}</h3><div className="muted">{p.type}</div><div className="progress"><span style={{ width: `${p.progress}%` }}/></div><p>{p.detail}</p><div className="actions"><button className="btn primary" onClick={() => toast('Dossier chantier — simulation')}>Ouvrir</button><button className="btn secondary" onClick={() => adjustProject(i)}>Avancement</button></div></div>)}</div></main></section>}
-    {page === 'materiel' && <section className="screen active workspace"><Header title="Matériel du matin" subtitle="Chantier Démo A — demain, 8 h 00" home={() => show('home')}/><main className="workspace-main"><div className="grid grid-3 material-kpis"><Kpi label="À préparer" value={remaining}/><Kpi label="Chargé" value={done}/><Kpi label="Manquant" value={demo.material.filter(m => m.kind === 'alert').length}/></div><div className="panel" style={{ marginTop: 18 }}><h3>Checklist de départ</h3><div className="list">{demo.material.map((m, i) => <label className="checkrow" key={i}><input type="checkbox" checked={m.done} onChange={event => setDemo(old => ({ ...old, material: old.material.map((item, j) => j === i ? { ...item, done: event.target.checked } : item) }))}/><div><strong>{m.name}</strong></div><span className={`badge ${m.kind}`}>{m.status}</span></label>)}</div><div className="actions" style={{ marginTop: 16 }}><button className="btn primary" onClick={() => toast(remaining ? `${remaining} élément(s) restent à charger` : 'Chargement fictif complet')}>Confirmer le chargement</button><button className="btn secondary" onClick={() => toast('Ajout d’élément — simulation')}>Ajouter un élément</button></div></div></main></section>}
-    {page === 'agenda' && <section className="screen active workspace"><Header title="Agenda" subtitle="Interventions et rendez-vous · Semaine fictive" home={() => show('home')}/><main className="workspace-main"><div className="actions"><button className="btn primary" onClick={() => setModal('event')}>Ajouter une intervention</button><button className="btn secondary" onClick={() => toast('Connexion Google Agenda — simulation')}>Connecter Google Agenda</button></div><div className="panel"><div className="calendar">{days.map((day, i) => <div className="day" key={day}><strong>{day}</strong>{demo.events[i].map((event, j) => <div className="event" key={j}>{event.title}</div>)}</div>)}</div></div></main></section>}
-    {page === 'scanner' && <section className="screen active workspace"><Header title="Scanner" subtitle="Simulation d’un mouvement de stock" home={() => show('home')}/><main className="workspace-main"><div className="grid grid-2"><div className="panel scan-box"><div className="scan-frame"><Icon page="scanner"/></div><button className="btn primary" onClick={() => { setScannedIndex(Math.min(2, demo.products.length - 1)); toast('Produit fictif reconnu') }}>Simuler un scan</button></div><div className="panel"><h3>Produit reconnu</h3><div className="muted" aria-live="polite">{scanned ? <><strong>{scanned.name}</strong><br/>{scanned.family} · stock fictif actuel : {scanned.stock}</> : 'Aucun produit scanné.'}</div><div className="form-grid" style={{ marginTop: 16 }}><div><label htmlFor="scan-type">Type de mouvement</label><select id="scan-type" value={scanType} onChange={e => setScanType(e.target.value)}><option>Entrée fournisseur</option><option>Sortie chantier</option><option>Retour chantier</option></select></div><div><label htmlFor="scan-qty">Quantité</label><input id="scan-qty" type="number" min="1" step="1" value={scanQty} onChange={e => setScanQty(Number(e.target.value))}/></div></div><button className="btn primary" style={{ marginTop: 16 }} onClick={validateScan}>Valider le mouvement</button></div></div></main></section>}
-    {page !== 'home' && <nav className="mobile-nav" aria-label="Navigation mobile">{cards.map(card => <button key={card.page} className={page === card.page ? 'selected' : ''} aria-current={page === card.page ? 'page' : undefined} onClick={() => show(card.page)}>{card.title}</button>)}</nav>}
-    {message && <div className="toast" role="status">{message}</div>}
-    {modal && <div className="modal show" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null) }}><div className="modal-box" role="dialog" aria-modal="true" aria-label={modal === 'product' ? 'Ajouter un produit' : modal === 'project' ? 'Nouveau chantier' : 'Ajouter une intervention'}><form onSubmit={submit}>
-      <h2>{modal === 'product' ? 'Ajouter un produit' : modal === 'project' ? 'Nouveau chantier' : 'Ajouter une intervention'}</h2>
-      {modal === 'product' && <div className="form-grid"><div><label htmlFor="p-name">Désignation</label><input id="p-name" name="name" placeholder="Ex. Colle néoprène" autoFocus/></div><div><label htmlFor="p-family">Famille</label><input id="p-family" name="family" placeholder="Ex. Colles"/></div><div><label htmlFor="p-stock">Stock</label><input id="p-stock" name="stock" type="number" min="0" step="1" defaultValue="1"/></div><div><label htmlFor="p-threshold">Seuil</label><input id="p-threshold" name="threshold" type="number" min="0" step="1" defaultValue="1"/></div></div>}
-      {modal === 'project' && <div className="form-grid"><div><label htmlFor="c-client">Client fictif</label><input id="c-client" name="client" placeholder="Ex. Client Démo F" autoFocus/></div><div><label htmlFor="c-city">Ville</label><input id="c-city" name="city" placeholder="Ville"/></div><div><label htmlFor="c-type">Type</label><input id="c-type" name="type" placeholder="Ex. Pose parquet"/></div><div><label htmlFor="c-progress">Avancement</label><input id="c-progress" name="progress" type="number" min="0" max="100" defaultValue="0"/></div></div>}
-      {modal === 'event' && <div className="form-grid"><div><label htmlFor="a-day">Jour</label><select id="a-day" name="day">{days.map((day, i) => <option value={i} key={day}>{day}</option>)}</select></div><div><label htmlFor="a-title">Intitulé</label><input id="a-title" name="title" placeholder="Ex. Prise de côtes" autoFocus/></div></div>}
-      <div className="actions" style={{ marginTop: 16 }}><button className="btn primary" type="submit">Enregistrer</button><button className="btn secondary" type="button" onClick={() => setModal(null)}>Annuler</button></div>
-    </form></div></div>}
+    {page === 'home' && <section className="screen active home"><header className="top"><img className="logo" src={logo} alt="Sensations Bois"/><div className="info"><div className="datetime"><div className="big">{new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(now)}</div><div className="small">{new Intl.DateTimeFormat('fr-FR', { dateStyle: 'full' }).format(now)}</div></div><button className="btn secondary" onClick={() => supabase?.auth.signOut()}>Déconnexion</button></div></header><section className="hello"><h1>Bonjour <span>Rémy</span></h1><p className="demo-note">Espace privé Sensations Bois · {data.products.length} références</p></section><section className="cards" aria-label="Espaces de travail">{cards.map(card => <button key={card.page} className="home-card" style={{ '--photo': `url(${photos[card.page]})` } as CSSProperties} onClick={() => { setPage(card.page); setError(''); window.scrollTo(0, 0) }}><div className="home-card-content"><div className="icon"><Icon page={card.page}/></div><h2>{card.title}</h2><p>{card.description}</p><div className="card-foot"><span>{card.foot}</span><span>Ouvrir →</span></div></div></button>)}</section></section>}
+    {page === 'stock' && <section className="screen active workspace"><Header title="Stock" subtitle="Catalogue réel et inventaire" home={() => setPage('home')}/><main className="workspace-main"><div className="grid grid-4"><Kpi label="Références" value={data.products.length}/><Kpi label="Non inventoriés" value={notInventoried}/><Kpi label="Sous le seuil" value={alerts}/><Kpi label="Mouvements affichés" value={data.movements.length}/></div><div className="actions" style={{ marginTop: 18 }}><button className="btn primary" onClick={() => setModal('inventory')} disabled={notInventoried === 0}>Saisir un inventaire initial</button><button className="btn secondary" onClick={() => { refresh().catch(cause => setError(errorText(cause))) }}>Actualiser</button><input className="search-input" aria-label="Rechercher un produit" placeholder="Rechercher une référence…" value={search} onChange={e => setSearch(e.target.value)}/></div><div className="panel mobile-table-wrap"><table><thead><tr><th>Référence</th><th>Produit</th><th>Famille</th><th>Stock</th><th>Seuil</th><th>État</th></tr></thead><tbody>{filtered.map(p => { const status = stockStatus(p.quantite_stock, 0, p.seuil_critique); return <tr key={p.id}><td data-label="Référence">{p.id_interne}</td><td data-label="Produit">{p.designation}</td><td data-label="Famille">{p.category}</td><td data-label="Stock">{p.quantite_stock === null ? 'Non inventorié' : `${p.quantite_stock}${p.unite ? ` ${p.unite}` : ''}`}</td><td data-label="Seuil">{p.seuil_critique}</td><td data-label="État"><span className={`badge ${status === 'Rupture' ? 'alert' : status === 'À recommander' ? 'warn' : status === 'OK' ? 'ok' : 'neutral'}`}>{status}</span></td></tr> })}</tbody></table></div></main></section>}
+    {page === 'chantiers' && <section className="screen active workspace"><Header title="Chantiers" subtitle="Dossiers privés" home={() => setPage('home')}/><main className="workspace-main"><div className="actions"><button className="btn primary" onClick={() => setModal('chantier')}>Nouveau chantier</button></div><div className="grid grid-3">{data.chantiers.map(c => <div className="project-card" key={c.id}><h3>{c.intitule}</h3><p>{c.reference} · {c.statut}</p><p>{c.client_nom || 'Client non renseigné'}</p><p>{c.adresse || 'Adresse non renseignée'}</p><div className="actions"><select aria-label={`Statut de ${c.intitule}`} value={c.statut} onChange={e => { if (!supabase) return; void mutate(() => supabase!.from('sb_chantiers').update({ statut: e.target.value }).eq('id', c.id).select('id').single(), 'Chantier mis à jour.') }}><option>prévu</option><option>en cours</option><option>terminé</option><option>annulé</option></select></div></div>)}</div>{data.chantiers.length === 0 && <p>Aucun chantier enregistré.</p>}</main></section>}
+    {page === 'materiel' && <section className="screen active workspace"><Header title="Matériel du matin" subtitle="Post-it sans débit automatique" home={() => setPage('home')}/><main className="workspace-main"><div className="grid grid-3"><Kpi label="À préparer" value={data.postit.filter(i => !i.est_prepare).length}/><Kpi label="Préparés" value={data.postit.filter(i => i.est_prepare).length}/><Kpi label="Matériels référencés" value={data.material.length}/></div><div className="actions" style={{ marginTop: 18 }}><button className="btn primary" onClick={() => setModal('postit')} disabled={data.chantiers.length === 0}>Ajouter au post-it</button></div><div className="panel"><h3>Liste de préparation</h3><div className="list">{data.postit.map(item => <label className="checkrow" key={item.id}><input type="checkbox" checked={item.est_prepare} onChange={e => { if (!supabase) return; void mutate(() => supabase!.from('sb_postit_items').update({ est_prepare: e.target.checked }).eq('id', item.id).select('id').single(), 'Post-it mis à jour sans mouvement de stock.') }}/><div><strong>{data.products.find(p => p.id === item.product_id)?.designation ?? data.material.find(m => m.id === item.materiel_id)?.designation ?? 'Élément'}</strong><small>{data.chantiers.find(c => c.id === item.chantier_id)?.intitule} · quantité prévue : {item.quantite_prevue ?? '—'}</small></div><span className={`badge ${item.est_prepare ? 'ok' : 'warn'}`}>{item.est_prepare ? 'Préparé' : 'À préparer'}</span></label>)}</div>{data.postit.length === 0 && <p>Aucun élément prévu.</p>}</div></main></section>}
+    {page === 'agenda' && <section className="screen active workspace"><Header title="Agenda" subtitle="Interventions privées" home={() => setPage('home')}/><main className="workspace-main"><div className="actions"><button className="btn primary" onClick={() => setModal('intervention')} disabled={data.chantiers.length === 0}>Nouvelle intervention</button></div><div className="grid grid-3">{data.interventions.map(i => <div className="project-card" key={i.id}><h3>{i.intitule}</h3><p>{data.chantiers.find(c => c.id === i.chantier_id)?.intitule}</p><p>{dateTime(i.debut)}</p><select aria-label={`Statut de ${i.intitule}`} value={i.statut} onChange={e => { if (!supabase) return; void mutate(() => supabase!.from('sb_interventions').update({ statut: e.target.value }).eq('id', i.id).select('id').single(), 'Intervention mise à jour.') }}><option>prévue</option><option>en cours</option><option>terminée</option><option>annulée</option></select></div>)}</div>{data.interventions.length === 0 && <p>Aucune intervention enregistrée.</p>}</main></section>}
+    {page === 'scanner' && <section className="screen active workspace"><Header title="Scanner" subtitle="Codes-barres et mouvements historisés" home={() => setPage('home')}/><main className="workspace-main"><Suspense fallback={<p>Chargement du scanner…</p>}><Scanner client={supabase!} products={data.products} onChanged={refresh}/></Suspense><h2 className="section-heading">Mouvements de stock</h2><div className="grid grid-2"><form className="panel" onSubmit={recordMovement}><h3>Enregistrer un mouvement</h3><label htmlFor="stock-product">Produit</label><select id="stock-product" value={selectedProduct} onChange={e => { setSelectedProduct(e.target.value); setStockSource('') }} required><option value="">Choisir un produit</option>{data.products.map(p => <option key={p.id} value={p.id}>{p.id_interne} · {p.designation}</option>)}</select><p className="muted">{product ? `Stock : ${product.quantite_stock === null ? 'Non inventorié' : product.quantite_stock}. Règle : ${product.debit_rule === 'prise_confirmee' ? 'cartouche prise confirmée' : product.debit_rule === 'boite_vide' ? 'boîte vide confirmée' : 'sortie manuelle confirmée'}.` : 'Choisissez une référence.'}</p><label htmlFor="stock-type">Opération</label><select id="stock-type" value={stockType} onChange={e => { setStockType(e.target.value); setStockSource('') }}><option value="entree">Entrée fournisseur</option><option value="sortie">{product?.debit_rule === 'boite_vide' ? 'Boîte vide confirmée' : product?.debit_rule === 'prise_confirmee' ? 'Prise de cartouche confirmée' : 'Sortie chantier confirmée'}</option><option value="retour">Retour chantier</option></select><label htmlFor="stock-qty">Quantité</label><input id="stock-qty" type="number" min="1" step="1" value={stockQuantity} onChange={e => setStockQuantity(Number(e.target.value))} required/>{stockType !== 'entree' && <><label htmlFor="stock-chantier">Chantier</label><select id="stock-chantier" value={stockChantier} onChange={e => { setStockChantier(e.target.value); setStockSource('') }} required><option value="">Choisir un chantier</option>{data.chantiers.map(c => <option key={c.id} value={c.id}>{c.intitule}</option>)}</select></>}{stockType === 'retour' && <><label htmlFor="stock-source">Sortie d’origine</label><select id="stock-source" value={stockSource} onChange={e => setStockSource(e.target.value)} required><option value="">Choisir la sortie</option>{matchingSources.map(m => <option key={m.id} value={m.id}>{dateTime(m.created_at)} · sorti {-m.variation}, retournable {-m.variation - data.movements.filter(r => r.sortie_movement_id === m.id).reduce((sum, r) => sum + r.variation, 0)}</option>)}</select></>}<label htmlFor="stock-reason">Motif</label><input id="stock-reason" value={stockReason} onChange={e => setStockReason(e.target.value)} required/><button className="btn primary" type="submit" disabled={busy || !product || product.quantite_stock === null}>Confirmer le mouvement</button></form><div className="panel"><h3>Historique récent</h3><div className="list">{data.movements.slice(0, 30).map(m => <div className="item" key={m.id}><div><strong>{data.products.find(p => p.id === m.product_id)?.designation ?? 'Produit'}</strong><small>{dateTime(m.created_at)} · {m.type_mouvement} · {m.motif}</small></div><span className={`badge ${m.variation < 0 ? 'warn' : 'ok'}`}>{m.variation > 0 ? '+' : ''}{m.variation}</span></div>)}</div>{data.movements.length === 0 && <p>Aucun mouvement enregistré.</p>}</div></div></main></section>}
+    {page !== 'home' && <nav className="mobile-nav" aria-label="Navigation mobile">{cards.map(card => <button key={card.page} className={page === card.page ? 'selected' : ''} aria-current={page === card.page ? 'page' : undefined} onClick={() => { setPage(card.page); setError('') }}>{card.title}</button>)}</nav>}
+    {(error || notice) && <div className={`toast visible ${error ? 'feedback-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}</div>}
+    {modal && <div className="modal show" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null) }}><div className="modal-box" role="dialog" aria-modal="true"><button className="modal-close" onClick={() => setModal(null)} aria-label="Fermer">×</button><h2>{modal === 'inventory' ? 'Inventaire initial' : modal === 'chantier' ? 'Nouveau chantier' : modal === 'intervention' ? 'Nouvelle intervention' : 'Ajouter au post-it'}</h2>{modal === 'inventory' && <form onSubmit={inventory}><p>Comptez physiquement la quantité. La validation crée automatiquement un mouvement d’inventaire initial.</p><label htmlFor="inventory-product">Produit non inventorié</label><select id="inventory-product" name="product_id" required><option value="">Choisir une référence</option>{data.products.filter(p => p.quantite_stock === null).map(p => <option key={p.id} value={p.id}>{p.id_interne} · {p.designation}</option>)}</select><label htmlFor="inventory-qty">Quantité constatée</label><input id="inventory-qty" name="quantity" type="number" min="0" step="1" required/><label className="confirm-row"><input type="checkbox" name="confirm" value="yes" required/> Je confirme avoir compté cette quantité.</label><button className="btn primary" disabled={busy}>Valider l’inventaire</button></form>}{modal === 'chantier' && <form onSubmit={submitChantier}><label>Référence<input name="reference" required/></label><label>Intitulé<input name="intitule" required/></label><label>Client<input name="client_nom"/></label><label>Adresse<input name="adresse"/></label><button className="btn primary" disabled={busy}>Créer</button></form>}{modal === 'intervention' && <form onSubmit={submitIntervention}><label>Chantier<select name="chantier_id" required><option value="">Choisir</option>{data.chantiers.map(c => <option key={c.id} value={c.id}>{c.intitule}</option>)}</select></label><label>Intitulé<input name="intitule" required/></label><label>Début<input name="debut" type="datetime-local" required/></label><button className="btn primary" disabled={busy}>Créer</button></form>}{modal === 'postit' && <form onSubmit={submitPostit}><label>Chantier<select name="chantier_id" required><option value="">Choisir</option>{data.chantiers.map(c => <option key={c.id} value={c.id}>{c.intitule}</option>)}</select></label><label>Produit<select name="product_id" required><option value="">Choisir</option>{data.products.map(p => <option key={p.id} value={p.id}>{p.designation}</option>)}</select></label><label>Quantité prévue<input name="quantity" type="number" min="1" step="1" required/></label><p>Cette opération prépare la liste sans débiter le stock.</p><button className="btn primary" disabled={busy}>Ajouter</button></form>}</div></div>}
   </div>
 }

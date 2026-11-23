@@ -18,4 +18,4 @@ npm run preview
 
 La PWA est générée pendant `npm run build`. Son installation se vérifie dans un navigateur compatible sur l'URL locale affichée par `npm run preview`. Pour y accéder depuis un smartphone, utiliser un serveur HTTPS ou un tunnel sécurisé : le service worker nécessite un contexte sécurisé en dehors de `localhost`.
 
-Le fichier `.env.example` prépare uniquement les noms des futures variables Supabase. Aucune connexion Supabase n'est configurée.
+La connexion Supabase nécessite `.env.local` avec l'URL exacte du projet Sensations Bois et sa clé publiable. Voir `docs/mission-06-connexion.md`. Sans cette configuration, l'application affiche un message de configuration et ne charge aucune donnée.
